@@ -9,4 +9,6 @@ logs/
 *.log
 *.log.*
 
+env/
+download/
 config.yaml
