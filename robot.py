@@ -3,12 +3,15 @@
 import logging
 import re
 import time
+
 import xml.etree.ElementTree as ET
 from queue import Empty
 from threading import Thread
 from base.func_zhipu import ZhiPu
 
 from wcferry import Wcf, WxMsg
+
+from upgrade import random_string_from_list,print_msg_types
 
 from base.func_bard import BardAssistant
 from base.func_chatglm import ChatGLM
@@ -34,6 +37,7 @@ class Robot(Job):
         self.LOG = logging.getLogger("Robot")
         self.wxid = self.wcf.get_self_wxid()
         self.allContacts = self.getAllContacts()
+        self.LOG.info(f"获取消息类型:{self.wcf.get_msg_types()}")
 
         if ChatType.is_in_chat_types(chat_type):
             if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
@@ -113,21 +117,31 @@ class Robot(Job):
     def toChitchat(self, msg: WxMsg) -> bool:
         """闲聊，接入 ChatGPT
         """
-        if not self.chat:  # 没接 ChatGPT，固定回复
-            rsp = "你@我干嘛？"
-        else:  # 接了 ChatGPT，智能回复
+        if msg.sender not in self.config.FRIENDS:  # 没权限的人问
+            rsp_list = ["你找我干嘛？","?","嗯?","有什么事情吗？","你好","好的","我现在有点忙，后面有时间再说","谢谢","好，我知道了","你应该知道我只是AI吧","如你所想，我只是个AI"]
+            rsp = random_string_from_list(rsp_list)
+        else:  # 报备微信ID，智能回复
+            rsp_list = ["请稍后....","请给我一点思考的时间!","信息接收中...","收到，稍后回复您","麻烦您稍等","等我问问看","我想想噢"]
             q = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
+            #等待时的临时回复
+            temp_answer = random_string_from_list(rsp_list)
+            self.sendTextMsg(temp_answer, (msg.roomid if msg.from_group() else msg.sender), (msg.sender if msg.from_group() else ""))
             rsp = self.chat.get_answer(q, (msg.roomid if msg.from_group() else msg.sender))
-
         if rsp:
             if msg.from_group():
-                self.sendTextMsg(rsp, msg.roomid, msg.sender)
+                if  'multi_image_url' in rsp:
+                    self.sendImageMsg(rsp, msg.roomid, msg.sender)
+                else:
+                    self.sendTextMsg(rsp, msg.roomid, msg.sender)
             else:
-                self.sendTextMsg(rsp, msg.sender)
+                if  'multi_image_url' in rsp:
+                    self.sendImageMsg(rsp, msg.sender)
+                else:
+                    self.sendTextMsg(rsp, msg.sender)
 
             return True
         else:
-            self.LOG.error(f"无法从 ChatGPT 获得答案")
+            self.LOG.error(f"无法从AI助手处获得答案")
             return False
 
     def processMsg(self, msg: WxMsg) -> None:
@@ -148,12 +162,18 @@ class Robot(Job):
             if msg.is_at(self.wxid):  # 被@
                 self.toAt(msg)
 
-            else:  # 其他消息
-                self.toChengyu(msg)
+            # else:  # 其他消息
+            #     self.toChengyu(msg)
 
             return  # 处理完群聊信息，后面就不需要处理了
 
         # 非群聊信息，按消息类型进行处理
+        """{0: '朋友圈消息', 1: '文字', 3: '图片', 34: '语音', 37: '好友确认', 40: 'POSSIBLEFRIEND_MSG', 42: '名片', 43: '视频', 47: '石头剪刀布 | 表情图片', 
+          48: '位置', 49: '共享实时位置、文件、转账、链接', 50: 'VOIPMSG', 51: '微信初始化', 52: 'VOIPNOTIFY', 53: 'VOIPINVITE', 62: '小视频', 66: '微信红包',
+          9999: 'SYSNOTICE', 10000: '红包、系统消息', 10002: '撤回消息', 1048625: '搜狗表情', 16777265: '链接', 436207665: '微信红包', 536936497: '红包封面', 
+          754974769: '视频号视频', 771751985: '视频号名片', 822083633: '引用消息', 922746929: '拍一拍', 973078577: '视频号直播', 974127153: '商品链接', 
+          975175729: '视频号直播', 1040187441: '音乐链接', 1090519089: '文件'}
+        """
         if msg.type == 37:  # 好友请求
             self.autoAcceptFriendRequest(msg)
 
@@ -220,6 +240,35 @@ class Robot(Job):
         else:
             self.LOG.info(f"To {receiver}: {ats}\r{msg}")
             self.wcf.send_text(f"{ats}\n\n{msg}", receiver, at_list)
+
+    def sendImageMsg(self, msg: str, receiver: str, at_list: str = "") -> None:
+        """ 发送图片消息
+        :param msg: 消息字符串
+        :param receiver: 接收人wxid或者群id
+        :param at_list: 要@的wxid, @所有人的wxid为：notify@all
+        """
+        # msg 中需要有 @ 名单中一样数量的 @
+        ats = ""
+        wxids = at_list.split(",")
+        picurl = msg.split('{')[1].split('}')[0][7:-1]
+        self.LOG.info(f"发送图片: {picurl} ")
+        picname = picurl.split('?')[0].split('/')[-1]
+        if at_list:
+            if at_list == "notify@all":  # @所有人
+                ats = " @所有人"
+            else:
+                wxids = at_list.split(",")
+                for wxid in wxids:
+                    # 根据 wxid 查找群昵称
+                    ats += f" @{self.wcf.get_alias_in_chatroom(wxid, receiver)}"
+
+        # {msg}{ats} 表示要发送的消息内容后面紧跟@，例如 北京天气情况为：xxx @张三
+        if ats == "":
+            self.LOG.info(f"发送图片给 {receiver} 图片名称: {picname} ")
+            self.wcf.send_image(f"{picurl}", receiver, at_list)
+        else:
+            self.LOG.info(f"发送图片给 {receiver} 图片名称: {picname} ")
+            self.wcf.send_image(f"{picurl}", receiver, at_list)
 
     def getAllContacts(self) -> dict:
         """
