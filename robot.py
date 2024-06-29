@@ -3,15 +3,11 @@
 import logging
 import re
 import time
-
 import xml.etree.ElementTree as ET
 from queue import Empty
 from threading import Thread
-from base.func_zhipu import ZhiPu
 
 from wcferry import Wcf, WxMsg
-
-from upgrade import random_string_from_list,print_msg_types
 
 from base.func_bard import BardAssistant
 from base.func_chatglm import ChatGLM
@@ -20,16 +16,17 @@ from base.func_chengyu import cy
 from base.func_news import News
 from base.func_tigerbot import TigerBot
 from base.func_xinghuo_web import XinghuoWeb
+from base.func_zhipu import ZhiPu
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
+from upgrade import print_msg_types, random_string_from_list
 
 __version__ = "39.0.10.1"
 
 
 class Robot(Job):
-    """个性化自己的机器人
-    """
+    """个性化自己的机器人"""
 
     def __init__(self, config: Config, wcf: Wcf, chat_type: int) -> None:
         self.wcf = wcf
@@ -37,7 +34,7 @@ class Robot(Job):
         self.LOG = logging.getLogger("Robot")
         self.wxid = self.wcf.get_self_wxid()
         self.allContacts = self.getAllContacts()
-        self.LOG.info(f"获取消息类型:{self.wcf.get_msg_types()}")
+        # self.LOG.info(f"获取消息类型:{self.wcf.get_msg_types()}")
 
         if ChatType.is_in_chat_types(chat_type):
             if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
@@ -77,7 +74,7 @@ class Robot(Job):
     @staticmethod
     def value_check(args: dict) -> bool:
         if args:
-            return all(value is not None for key, value in args.items() if key != 'proxy')
+            return all(value is not None for key, value in args.items() if key != "proxy")
         return False
 
     def toAt(self, msg: WxMsg) -> bool:
@@ -115,27 +112,54 @@ class Robot(Job):
         return status
 
     def toChitchat(self, msg: WxMsg) -> bool:
-        """闲聊，接入 ChatGPT
-        """
+        """闲聊，接入 ChatGPT"""
         if msg.sender not in self.config.FRIENDS:  # 没权限的人问
-            rsp_list = ["你找我干嘛？","?","嗯?","有什么事情吗？","你好","好的","我现在有点忙，后面有时间再说","谢谢","好，我知道了","你应该知道我只是AI吧","如你所想，我只是个AI"]
-            rsp = random_string_from_list(rsp_list)
+            rsp_list = [
+                "你找我干嘛？",
+                "?",
+                "嗯?",
+                "有什么事情吗？",
+                "你好",
+                "好的",
+                "我现在有点忙，后面有时间再说",
+                "谢谢",
+                "好，我知道了",
+                "你应该知道我只是AI吧",
+                "如你所想，我只是个AI",
+            ]
+            # 过于沙雕 关了
+            # rsp = random_string_from_list(rsp_list)
+            return True
         else:  # 报备微信ID，智能回复
-            rsp_list = ["请稍后....","请给我一点思考的时间!","信息接收中...","收到，稍后回复您","麻烦您稍等","等我问问看","我想想噢"]
+            rsp_list = [
+                "请稍后....",
+                "请给我一点思考的时间!",
+                "信息接收中...",
+                "收到，稍后回复您",
+                "麻烦您稍等",
+                "等我问问看",
+                "我想想噢",
+            ]
             q = re.sub(r"@.*?[\u2005|\s]", "", msg.content).replace(" ", "")
-            #等待时的临时回复
+            # 等待时的临时回复
             temp_answer = random_string_from_list(rsp_list)
             self.sendTextMsg(temp_answer, (msg.roomid if msg.from_group() else msg.sender), (msg.sender if msg.from_group() else ""))
-            rsp = self.chat.get_answer(q, (msg.roomid if msg.from_group() else msg.sender))
-        if rsp:
-            if msg.from_group():
-                if  'multi_image_url' in rsp:
-                    self.sendImageMsg(rsp, msg.roomid, msg.sender)
-                else:
-                    self.sendTextMsg(rsp, msg.roomid, msg.sender)
+            if "热点新闻" in msg.content:
+                rsp = News().get_hotLine()
+                self.sendImageMsg(f"https://jx.iqfk.top/60s.php?key=54K55paw6Iqx6Zuo&type=img", msg.sender)
             else:
-                if  'multi_image_url' in rsp:
-                    self.sendImageMsg(rsp, msg.sender)
+                rsp = self.chat.get_answer(q, (msg.roomid if msg.from_group() else msg.sender))
+        if rsp:
+            if "multi_image_url" in rsp:
+                picurl = rsp.split("{")[1].split("}")[0][7:-1]
+                if msg.from_group():
+                    self.sendImageMsg(picurl, msg.roomid, msg.sender)
+                else:
+                    self.sendImageMsg(picurl, msg.sender)
+
+            else:
+                if msg.from_group():
+                    self.sendTextMsg(rsp, msg.roomid, msg.sender)
                 else:
                     self.sendTextMsg(rsp, msg.sender)
 
@@ -182,6 +206,7 @@ class Robot(Job):
 
         elif msg.type == 0x01:  # 文本消息
             # 让配置加载更灵活，自己可以更新配置。也可以利用定时任务更新。
+            self.LOG.info(f"已接收：{msg.content}")
             if msg.from_self():
                 if msg.content == "^更新$":
                     self.config.reload()
@@ -217,7 +242,7 @@ class Robot(Job):
         Thread(target=innerProcessMsg, name="GetMessage", args=(self.wcf,), daemon=True).start()
 
     def sendTextMsg(self, msg: str, receiver: str, at_list: str = "") -> None:
-        """ 发送消息
+        """发送消息
         :param msg: 消息字符串
         :param receiver: 接收人wxid或者群id
         :param at_list: 要@的wxid, @所有人的wxid为：notify@all
@@ -242,7 +267,7 @@ class Robot(Job):
             self.wcf.send_text(f"{ats}\n\n{msg}", receiver, at_list)
 
     def sendImageMsg(self, msg: str, receiver: str, at_list: str = "") -> None:
-        """ 发送图片消息
+        """发送图片消息
         :param msg: 消息字符串
         :param receiver: 接收人wxid或者群id
         :param at_list: 要@的wxid, @所有人的wxid为：notify@all
@@ -250,9 +275,7 @@ class Robot(Job):
         # msg 中需要有 @ 名单中一样数量的 @
         ats = ""
         wxids = at_list.split(",")
-        picurl = msg.split('{')[1].split('}')[0][7:-1]
-        self.LOG.info(f"发送图片: {picurl} ")
-        picname = picurl.split('?')[0].split('/')[-1]
+        picname = msg.split("?")[0].split("/")[-1]
         if at_list:
             if at_list == "notify@all":  # @所有人
                 ats = " @所有人"
@@ -265,10 +288,10 @@ class Robot(Job):
         # {msg}{ats} 表示要发送的消息内容后面紧跟@，例如 北京天气情况为：xxx @张三
         if ats == "":
             self.LOG.info(f"发送图片给 {receiver} 图片名称: {picname} ")
-            self.wcf.send_image(f"{picurl}", receiver, at_list)
+            self.wcf.send_image(f"{msg}", receiver, at_list)
         else:
             self.LOG.info(f"发送图片给 {receiver} 图片名称: {picname} ")
-            self.wcf.send_image(f"{picurl}", receiver, at_list)
+            self.wcf.send_image(f"{msg}", receiver, at_list)
 
     def getAllContacts(self) -> dict:
         """
@@ -310,5 +333,22 @@ class Robot(Job):
             return
 
         news = News().get_important_news()
-        for r in receivers:
-            self.sendTextMsg(news, r)
+        # 0521 新增红色背景每日新闻，在没有财经新闻或问的时候出现
+        if len(news) < 10:
+            new_news = News().news_60s()
+            for r in receivers:
+                # self.LOG.info(f"发送新闻图片给 {r} ")
+                # self.sendImageMsg(f"https://zj.v.api.aa1.cn/api/60s-v2/?cc=小明助手", r)
+                self.sendTextMsg(new_news, r)
+        else:
+            for r in receivers:
+                self.sendTextMsg(news, r)
+
+    def send_news(self, reciver=None) -> None:
+        receivers = self.config.FRIENDS
+        if not receivers:
+            return
+        # 0525 新增热点新闻
+        hot_news = News().get_hotLine()
+        if reciver in receivers:
+            self.sendTextMsg(hot_news, reciver)
